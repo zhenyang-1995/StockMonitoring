@@ -463,7 +463,7 @@ class TrendChart(tk.Canvas):
         self.macd_h = 70
         self.gap = 5
 
-    def draw(self, trend_data, macd_info=None, stock_name=""):
+    def draw(self, trend_data, macd_info=None, stock_name="", fixed_time_axis=False):
         self.delete("all")
         if not trend_data or not trend_data.get("data"):
             self.create_text(
@@ -488,24 +488,78 @@ class TrendChart(tk.Canvas):
         max_p = pre_close + max_diff
         n = len(data)
 
-        def x_of(i):
-            w = self.width - self.pad_left - self.pad_right
-            return self.pad_left + (i / max(n - 1, 1)) * w
+        # 根据宽度动态调整边距（迷你图更紧凑）
+        if self.width < 250:
+            self.pad_left = 30
+            self.pad_right = 6
+        else:
+            self.pad_left = 45
+            self.pad_right = 10
+
+        plot_w = self.width - self.pad_left - self.pad_right
+
+        # 动态计算各区域高度
+        available_h = self.height - self.pad_top - self.time_axis_h
+        if available_h > 200:
+            self.price_plot_h = int(available_h * 0.55)
+            self.vol_h = int(available_h * 0.20)
+            self.macd_h = int(available_h * 0.20)
+            self.gap = 5
+        else:
+            self.price_plot_h = available_h - 5
+            self.vol_h = 0
+            self.macd_h = 0
+            self.gap = 0
+
+        self.price_total_h = self.pad_top + self.price_plot_h + self.time_axis_h
+        vol_y0 = self.price_total_h + self.gap
+        vol_y1 = vol_y0 + self.vol_h
+        macd_y0 = vol_y1 + self.gap
+        macd_y1 = macd_y0 + self.macd_h
+
+        # x 坐标计算
+        if fixed_time_axis:
+            def parse_time(t):
+                t = str(t).strip()
+                if ":" in t:
+                    h, m = map(int, t.split(":"))
+                elif len(t) == 4:
+                    h, m = int(t[:2]), int(t[2:])
+                else:
+                    return None
+                return h, m
+
+            def time_to_minutes(t):
+                parsed = parse_time(t)
+                if not parsed:
+                    return 0
+                h, m = parsed
+                total = h * 60 + m
+                if h < 12:
+                    return max(0, total - 570)  # 9:30 = 0
+                else:
+                    return 120 + max(0, total - 780)  # 13:00 = 120
+
+            x_positions = []
+            for d in data:
+                mins = time_to_minutes(d["time"])
+                x_positions.append(self.pad_left + (mins / 240) * plot_w)
+
+            def x_of(i):
+                return x_positions[i]
+        else:
+            def x_of(i):
+                return self.pad_left + (i / max(n - 1, 1)) * plot_w
 
         def y_price(p):
             return self.pad_top + self.price_plot_h - (p - min_p) / (max_p - min_p) * self.price_plot_h
 
-        vol_y0 = self.price_total_h + self.gap
-        vol_y1 = vol_y0 + self.vol_h
         max_vol = max(d["volume"] for d in data) if data else 1
 
         def y_vol(v):
             if max_vol <= 0:
                 return vol_y1
             return vol_y1 - (v / max_vol) * self.vol_h
-
-        macd_y0 = vol_y1 + self.gap
-        macd_y1 = macd_y0 + self.macd_h
 
         # 价格区
         for i in range(5):
@@ -524,15 +578,29 @@ class TrendChart(tk.Canvas):
             self.create_text(self.pad_left - 4, y, text=f"{price:.1f}",
                              fill=color, font=("Microsoft YaHei", 8), anchor="e")
 
-        times = [d["time"] for d in data]
-        time_points = [0, n // 4, n // 2, 3 * n // 4, n - 1]
-        for idx in time_points:
-            if 0 <= idx < len(times):
-                t = times[idx]
-                if len(t) == 4:
-                    t = f"{t[:2]}:{t[2:]}"
-                self.create_text(x_of(idx), self.price_total_h - 6, text=t,
-                                 fill=THEME["fg2"], font=("Microsoft YaHei", 7))
+        # 横轴时间标签
+        if fixed_time_axis:
+            # 休市分隔线（11:30）
+            noon_x = self.pad_left + (120 / 240) * plot_w
+            self.create_line(noon_x, self.pad_top, noon_x, self.pad_top + self.price_plot_h,
+                             fill="#2a2f3d", width=1, dash=(3, 3))
+
+            time_labels = [("09:30", 0), ("10:30", 60), ("11:30", 120),
+                           ("13:00", 120), ("14:00", 180), ("15:00", 240)]
+            for label, mins in time_labels:
+                tx = self.pad_left + (mins / 240) * plot_w
+                self.create_text(tx, self.price_total_h - 6, text=label,
+                                 fill=THEME["fg2"], font=("Microsoft YaHei", 6))
+        else:
+            times = [d["time"] for d in data]
+            time_points = [0, n // 4, n // 2, 3 * n // 4, n - 1]
+            for idx in time_points:
+                if 0 <= idx < len(times):
+                    t = times[idx]
+                    if len(t) == 4:
+                        t = f"{t[:2]}:{t[2:]}"
+                    self.create_text(x_of(idx), self.price_total_h - 6, text=t,
+                                     fill=THEME["fg2"], font=("Microsoft YaHei", 7))
 
         avg_pts = [(x_of(i), y_price(avgs[i])) for i in range(n)]
         if len(avg_pts) > 1:
@@ -551,56 +619,131 @@ class TrendChart(tk.Canvas):
             alerts = macd_info.get("alerts", [])
             if alerts:
                 title_text += "   " + " ".join(alerts)
+        # 迷你图标题字号更小
+        title_font = ("Microsoft YaHei", 7, "bold") if self.width < 250 else ("Microsoft YaHei", 9, "bold")
         self.create_text(self.pad_left + 4, 9, text=title_text,
-                         fill=THEME["fg"], font=("Microsoft YaHei", 9, "bold"), anchor="w")
+                         fill=THEME["fg"], font=title_font, anchor="w")
 
         # 成交量区
-        self.create_line(self.pad_left, vol_y1, self.width - self.pad_right, vol_y1,
-                         fill=THEME["grid"], width=1)
-        bar_w = max(1, (self.width - self.pad_left - self.pad_right) / n * 0.65)
-        for i in range(n):
-            x = x_of(i)
-            v = data[i]["volume"]
-            y_top = y_vol(v)
-            c = THEME["up"] if (i > 0 and prices[i] >= prices[i - 1]) or (i == 0 and prices[i] >= pre_close) else THEME["down"]
-            self.create_rectangle(x - bar_w / 2, y_top, x + bar_w / 2, vol_y1,
-                                  fill=c, outline="")
-        self.create_text(self.pad_left - 4, vol_y0 + 4, text="量",
-                         fill=THEME["fg2"], font=("Microsoft YaHei", 8), anchor="e")
-
-        # MACD区
-        dif = macd_info.get("dif", []) if macd_info else []
-        dea = macd_info.get("dea", []) if macd_info else []
-        macd_vals = macd_info.get("macd", []) if macd_info else []
-
-        if dif and dea and macd_vals and len(dif) == n:
-            macd_min = min(macd_vals)
-            macd_max = max(macd_vals)
-            m_range = max(abs(macd_min), abs(macd_max), 0.0001)
-            zero_y = macd_y0 + self.macd_h / 2
-            self.create_line(self.pad_left, zero_y, self.width - self.pad_right, zero_y,
-                             fill="#252a3a", width=1, dash=(2, 2))
-
-            bar_w_macd = max(1, (self.width - self.pad_left - self.pad_right) / n * 0.55)
+        if self.vol_h > 0:
+            self.create_line(self.pad_left, vol_y1, self.width - self.pad_right, vol_y1,
+                             fill=THEME["grid"], width=1)
+            bar_w = 2 if fixed_time_axis else max(1, plot_w / n * 0.65)
             for i in range(n):
                 x = x_of(i)
-                val = macd_vals[i]
-                y = zero_y - (val / (m_range * 2)) * self.macd_h * 0.9
-                color = THEME["up"] if val >= 0 else THEME["down"]
-                self.create_line(x, zero_y, x, y, fill=color, width=max(1, int(bar_w_macd)))
-
-            dif_pts = [(x_of(i), zero_y - (dif[i] / (m_range * 2)) * self.macd_h * 0.9) for i in range(n)]
-            dea_pts = [(x_of(i), zero_y - (dea[i] / (m_range * 2)) * self.macd_h * 0.9) for i in range(n)]
-            if len(dif_pts) > 1:
-                self.create_line(dif_pts, fill=THEME["fg"], width=1, smooth=True)
-            if len(dea_pts) > 1:
-                self.create_line(dea_pts, fill="#fbbf24", width=1, smooth=True)
-
-            self.create_text(self.pad_left - 4, macd_y0 + 6, text="MACD",
+                v = data[i]["volume"]
+                y_top = y_vol(v)
+                c = THEME["up"] if (i > 0 and prices[i] >= prices[i - 1]) or (i == 0 and prices[i] >= pre_close) else THEME["down"]
+                self.create_rectangle(x - bar_w / 2, y_top, x + bar_w / 2, vol_y1,
+                                      fill=c, outline="")
+            self.create_text(self.pad_left - 4, vol_y0 + 4, text="量",
                              fill=THEME["fg2"], font=("Microsoft YaHei", 8), anchor="e")
-        else:
-            self.create_text(self.width // 2, macd_y0 + self.macd_h // 2,
-                             text="MACD计算中...", fill="#374151", font=("Microsoft YaHei", 10))
+
+        # MACD区
+        if self.macd_h > 0:
+            dif = macd_info.get("dif", []) if macd_info else []
+            dea = macd_info.get("dea", []) if macd_info else []
+            macd_vals = macd_info.get("macd", []) if macd_info else []
+
+            if dif and dea and macd_vals and len(dif) == n:
+                macd_min = min(macd_vals)
+                macd_max = max(macd_vals)
+                m_range = max(abs(macd_min), abs(macd_max), 0.0001)
+                zero_y = macd_y0 + self.macd_h / 2
+                self.create_line(self.pad_left, zero_y, self.width - self.pad_right, zero_y,
+                                 fill="#252a3a", width=1, dash=(2, 2))
+
+                bar_w_macd = 1 if fixed_time_axis else max(1, plot_w / n * 0.55)
+                for i in range(n):
+                    x = x_of(i)
+                    val = macd_vals[i]
+                    y = zero_y - (val / (m_range * 2)) * self.macd_h * 0.9
+                    color = THEME["up"] if val >= 0 else THEME["down"]
+                    self.create_line(x, zero_y, x, y, fill=color, width=max(1, int(bar_w_macd)))
+
+                dif_pts = [(x_of(i), zero_y - (dif[i] / (m_range * 2)) * self.macd_h * 0.9) for i in range(n)]
+                dea_pts = [(x_of(i), zero_y - (dea[i] / (m_range * 2)) * self.macd_h * 0.9) for i in range(n)]
+                if len(dif_pts) > 1:
+                    self.create_line(dif_pts, fill=THEME["fg"], width=1, smooth=True)
+                if len(dea_pts) > 1:
+                    self.create_line(dea_pts, fill="#fbbf24", width=1, smooth=True)
+
+                self.create_text(self.pad_left - 4, macd_y0 + 6, text="MACD",
+                                 fill=THEME["fg2"], font=("Microsoft YaHei", 8), anchor="e")
+            else:
+                self.create_text(self.width // 2, macd_y0 + self.macd_h // 2,
+                                 text="MACD计算中...", fill="#374151", font=("Microsoft YaHei", 10))
+
+
+# ============ 迷你分时折线（多股同列） ============
+class MiniSparkline(tk.Canvas):
+    """超紧凑迷你分时图：只有折线 + 0%线 + 下方填充"""
+
+    def __init__(self, parent, width=140, height=28, bg=THEME["card"]):
+        super().__init__(parent, width=width, height=height, bg=bg, highlightthickness=0)
+        self.width = width
+        self.height = height
+
+    def draw(self, trend_data, is_up=True):
+        self.delete("all")
+        if not trend_data or not trend_data.get("data"):
+            return
+
+        data = trend_data["data"]
+        pre_close = trend_data.get("pre_close", 0)
+        if pre_close <= 0:
+            pre_close = data[0]["price"] if data else 1
+
+        prices = [d["price"] for d in data]
+        min_p = min(prices)
+        max_p = max(prices)
+        max_diff = max(abs(max_p - pre_close), abs(min_p - pre_close))
+        if max_diff < 0.01:
+            max_diff = 0.01
+        min_y = pre_close - max_diff
+        max_y = pre_close + max_diff
+
+        w = self.width
+        h = self.height
+
+        # 固定时间轴映射：9:30-15:00，共 240 分钟
+        def time_to_minutes(t):
+            t = str(t).strip()
+            if ":" in t:
+                h_t, m_t = map(int, t.split(":"))
+            elif len(t) == 4:
+                h_t, m_t = int(t[:2]), int(t[2:])
+            else:
+                return 0
+            total = h_t * 60 + m_t
+            if h_t < 12:
+                return max(0, total - 570)  # 9:30 = 0
+            else:
+                return 120 + max(0, total - 780)  # 13:00 = 120
+
+        pts = []
+        for d in data:
+            mins = time_to_minutes(d["time"])
+            x = (mins / 240) * w
+            y = h - (d["price"] - min_y) / (max_y - min_y) * h
+            pts.append((x, y))
+
+        if not pts:
+            return
+
+        # 0% 线（pre_close）
+        zero_y = h - (pre_close - min_y) / (max_y - min_y) * h
+        self.create_line(0, zero_y, w, zero_y, fill="#2a2f3d", width=1, dash=(2, 2))
+
+        # 折线下方填充
+        color = THEME["up"] if is_up else THEME["down"]
+        fill_color = "#3d1f1f" if is_up else "#1f3d25"
+        fill_pts = pts + [(w, h), (0, h)]
+        self.create_polygon(fill_pts, fill=fill_color, outline="")
+
+        # 折线
+        if len(pts) > 1:
+            self.create_line(pts, fill=color, width=1.2, smooth=True)
 
 
 # ============ 五档行情面板 ============
@@ -608,25 +751,33 @@ class WudangPanel(tk.Frame):
     BIG_ORDER_THRESHOLD = 500  # 大单阈值：500手
 
     def __init__(self, parent, bg=THEME["card"]):
-        super().__init__(parent, bg=bg, width=90)
+        super().__init__(parent, bg=bg, width=110)
         self.pack_propagate(False)
         tk.Label(self, text="五档", bg=bg, fg=THEME["accent"],
                  font=("Microsoft YaHei", 9, "bold")).pack(pady=(6, 2))
         self.rows = []
-        for i in range(5):
+        # 卖盘：从上到下 卖5 ~ 卖1（价格由高到低，卖5最高，卖1最靠近中间）
+        sell_labels = ["卖5", "卖4", "卖3", "卖2", "卖1"]
+        for label in sell_labels:
             f = tk.Frame(self, bg=bg)
             f.pack(fill="x", padx=2, pady=1)
+            tk.Label(f, text=label, bg=bg, fg=THEME["fg2"],
+                     font=("Microsoft YaHei", 7), width=3, anchor="w").pack(side="left")
             sell = tk.Label(f, text="", bg=bg, fg=THEME["down"], font=("Microsoft YaHei", 8), anchor="e")
             sell.pack(side="right")
             sell_vol = tk.Label(f, text="", bg=bg, fg=THEME["fg2"], font=("Microsoft YaHei", 7), anchor="e")
             sell_vol.pack(side="right", padx=(4, 0))
-            self.rows.insert(0, {"frame": f, "price": sell, "vol": sell_vol, "side": "sell"})
+            self.rows.append({"frame": f, "price": sell, "vol": sell_vol, "side": "sell"})
 
         tk.Frame(self, bg=THEME["border"], height=1).pack(fill="x", padx=4, pady=2)
 
-        for i in range(5):
+        # 买盘：从上到下 买1 ~ 买5（价格由高到低，买1最高，最靠近中间）
+        buy_labels = ["买1", "买2", "买3", "买4", "买5"]
+        for label in buy_labels:
             f = tk.Frame(self, bg=bg)
             f.pack(fill="x", padx=2, pady=1)
+            tk.Label(f, text=label, bg=bg, fg=THEME["fg2"],
+                     font=("Microsoft YaHei", 7), width=3, anchor="w").pack(side="left")
             buy = tk.Label(f, text="", bg=bg, fg=THEME["up"], font=("Microsoft YaHei", 8), anchor="e")
             buy.pack(side="right")
             buy_vol = tk.Label(f, text="", bg=bg, fg=THEME["fg2"], font=("Microsoft YaHei", 7), anchor="e")
@@ -646,8 +797,10 @@ class WudangPanel(tk.Frame):
         all_vols = []
         for i, r in enumerate(self.rows):
             if r["side"] == "sell":
+                # sell[4]=卖5(最高) ~ sell[0]=卖1(最低)
                 item = wd.get("sell", [{}] * 5)[4 - i]
             else:
+                # buy[0]=买1(最高) ~ buy[4]=买5(最低)
                 item = wd.get("buy", [{}] * 5)[i - 5]
             all_vols.append(item.get("volume", 0))
 
@@ -655,8 +808,10 @@ class WudangPanel(tk.Frame):
 
         for i, r in enumerate(self.rows):
             if r["side"] == "sell":
+                # i=0(卖5) -> sell[4], i=4(卖1) -> sell[0]
                 item = wd.get("sell", [{}] * 5)[4 - i]
             else:
+                # i=5(买1) -> buy[0], i=9(买5) -> buy[4]
                 item = wd.get("buy", [{}] * 5)[i - 5]
             price = item.get("price", 0)
             vol = item.get("volume", 0)
@@ -811,16 +966,42 @@ class SettingsWindow:
         scroll_wrap = tk.Frame(self.window, bg=THEME["bg"])
         scroll_wrap.pack(fill="both", expand=True, padx=16, pady=(10, 0))
 
-        canvas = tk.Canvas(scroll_wrap, bg=THEME["bg"], highlightthickness=0)
-        scrollbar = tk.Scrollbar(scroll_wrap, orient="vertical", command=canvas.yview)
-        content = tk.Frame(canvas, bg=THEME["bg"])
+        self.outer_canvas = tk.Canvas(scroll_wrap, bg=THEME["bg"], highlightthickness=0)
+        scrollbar = tk.Scrollbar(scroll_wrap, orient="vertical", command=self.outer_canvas.yview,
+                                  bg="#4a4a4a", activebackground="#6a6a6a",
+                                  troughcolor="#0a0a0a", highlightthickness=0, bd=0, width=8)
+        content = tk.Frame(self.outer_canvas, bg=THEME["bg"])
 
-        content.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=content, anchor="nw", width=500)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        content.bind("<Configure>", lambda e: self.outer_canvas.configure(scrollregion=self.outer_canvas.bbox("all")))
+        self.outer_canvas.create_window((0, 0), window=content, anchor="nw", width=500)
+        self.outer_canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas.pack(side="left", fill="both", expand=True)
+        self.outer_canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+
+        # 全局滚轮：根据鼠标位置决定滚动哪个Canvas
+        def _on_wheel(event):
+            mx, my = event.x_root, event.y_root
+            delta = getattr(event, 'delta', 0)
+            in_list = False
+            try:
+                lx1 = list_canvas.winfo_rootx()
+                ly1 = list_canvas.winfo_rooty()
+                lx2 = lx1 + list_canvas.winfo_width()
+                ly2 = ly1 + list_canvas.winfo_height()
+                in_list = lx1 <= mx <= lx2 and ly1 <= my <= ly2
+            except Exception:
+                pass
+            target = list_canvas if in_list else self.outer_canvas
+            if delta:
+                target.yview_scroll(int(-1 * (delta / 120)), "units")
+            elif hasattr(event, 'num'):
+                target.yview_scroll(-1 if event.num == 4 else 1, "units")
+            return "break"
+
+        self.window.bind("<MouseWheel>", _on_wheel)
+        self.window.bind("<Button-4>", _on_wheel)
+        self.window.bind("<Button-5>", _on_wheel)
 
         # ===== 全局设置卡片 =====
         global_card = tk.Frame(content, bg=THEME["card"], highlightbackground=THEME["border"],
@@ -922,13 +1103,15 @@ class SettingsWindow:
             tk.Label(hdr2, text=text, bg=THEME["card"], fg=THEME["fg2"],
                      width=width, font=("Microsoft YaHei", 8)).pack(side="left", padx=(2, 0))
 
-        # 股票列表（固定高度，内部滚动）
-        list_frame = tk.Frame(stocks_card, bg=THEME["card"], height=260)
-        list_frame.pack(fill="x", padx=10, pady=2)
-        list_frame.pack_propagate(False)
+        # 股票列表（自适应高度，内部滚动）
+        self.list_frame = tk.Frame(stocks_card, bg=THEME["card"])
+        self.list_frame.pack(fill="x", padx=10, pady=2)
+        self.list_frame.pack_propagate(False)
 
-        list_canvas = tk.Canvas(list_frame, bg=THEME["card"], highlightthickness=0)
-        list_scroll = tk.Scrollbar(list_frame, orient="vertical", command=list_canvas.yview)
+        list_canvas = tk.Canvas(self.list_frame, bg=THEME["card"], highlightthickness=0)
+        list_scroll = tk.Scrollbar(self.list_frame, orient="vertical", command=list_canvas.yview,
+                                   bg="#4a4a4a", activebackground="#6a6a6a",
+                                   troughcolor="#0a0a0a", highlightthickness=0, bd=0, width=8)
         self.stock_list_frame = tk.Frame(list_canvas, bg=THEME["card"])
 
         self.stock_list_frame.bind("<Configure>", lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all")))
@@ -952,6 +1135,7 @@ class SettingsWindow:
             self.add_stock_row(stock)
         if not self.stock_rows_ui:
             self.add_stock_row()
+        self._update_list_height()
 
         # 添加按钮
         add_btn = make_lbl_btn(stocks_card, "+ 添加股票", THEME["btn_secondary"], THEME["fg"],
@@ -983,21 +1167,28 @@ class SettingsWindow:
             self.list_scroll.pack_forget()
             self.list_scroll_visible = False
 
+    def _update_list_height(self):
+        """根据股票数量动态调整列表区域高度"""
+        if not hasattr(self, 'list_frame') or not self.list_frame.winfo_exists():
+            return
+        row_count = len(self.stock_rows_ui)
+        # 表头约25 + 每行约30，最小80，最大260
+        target_h = min(260, max(80, 30 + row_count * 30))
+        self.list_frame.config(height=target_h)
+        # 同时刷新外层滚动区域，防止添加/删除后scrollregion未更新导致无限滚动
+        if hasattr(self, 'outer_canvas') and self.outer_canvas.winfo_exists():
+            self.window.after(50, lambda: self.outer_canvas.configure(
+                scrollregion=self.outer_canvas.bbox("all")))
+
     def add_stock_row(self, stock=None):
         frame = tk.Frame(self.stock_list_frame, bg=THEME["card"])
         frame.pack(fill="x", pady=2)
 
         div_cfg = stock.get("divergence", {}) if stock else {}
-        market_var = tk.StringVar(value=stock.get("market", "") if stock else "")
         code_var = tk.StringVar(value=stock.get("code", "") if stock else "")
         name_var = tk.StringVar(value=stock.get("name", "") if stock else "")
         div_en_var = tk.BooleanVar(value=div_cfg.get("enabled", True) if stock else True)
         periods = div_cfg.get("periods", [5, 15, 30]) if stock else [5, 15, 30]
-
-        market_cb = ttk.Combobox(frame, textvariable=market_var, values=["", "sh", "sz", "bj"],
-                                 width=5, state="readonly")
-        market_cb.pack(side="left", padx=(0, 3))
-        market_cb.configure(font=("Microsoft YaHei", 9))
 
         code_entry = tk.Entry(frame, textvariable=code_var, width=10, font=("Microsoft YaHei", 9),
                               bg=THEME["input_bg"], fg=THEME["fg"], insertbackground=THEME["fg"],
@@ -1029,29 +1220,29 @@ class SettingsWindow:
         del_lbl.bind("<Button-1>", lambda e, f=frame: self.remove_stock_row(f))
 
         self.stock_rows_ui.append({
-            "frame": frame, "market": market_var, "code": code_var, "name": name_var,
+            "frame": frame, "code": code_var, "name": name_var,
             "div_en": div_en_var, "p5": p5, "p15": p15, "p30": p30,
         })
+        self._update_list_height()
 
     def remove_stock_row(self, frame):
         self.stock_rows_ui = [r for r in self.stock_rows_ui if r["frame"] != frame]
         frame.destroy()
         if not self.stock_rows_ui:
             self.add_stock_row()
+        self._update_list_height()
 
     def save(self):
         stocks = []
         for r in self.stock_rows_ui:
             code = r["code"].get().strip()
-            market = r["market"].get().strip()
             name = r["name"].get().strip()
             if not code:
                 continue
             if not code.isdigit() or len(code) != 6:
                 messagebox.showwarning("格式错误", f"股票代码必须是6位数字: {code}", parent=self.window)
                 return
-            if not market:
-                market = auto_detect_market(code) or "sh"
+            market = auto_detect_market(code) or "sh"
 
             periods = []
             if r["p5"].get():
@@ -1132,6 +1323,7 @@ class StockMonitorApp:
         self.build_ui()
         self.setup_drag()
         self.schedule_refresh()
+        self.schedule_trend_refresh()
         self.process_queue()
 
         wx = self.config.get("window", {}).get("x", 100)
@@ -1145,8 +1337,8 @@ class StockMonitorApp:
         self.font_price = tkfont.Font(family="Consolas", size=int(14 * s), weight="bold")
         self.font_pct = tkfont.Font(family="Consolas", size=int(10 * s))
         self.font_weibi = tkfont.Font(family="Consolas", size=int(8 * s))
-        self.row_padx = int(8 * s)
-        self.row_pady = int(6 * s)
+        self.row_padx = int(6 * s)
+        self.row_pady = int(3 * s)
 
     def apply_settings(self, alpha, scale, interval):
         self.ui_alpha = alpha
@@ -1243,6 +1435,10 @@ class StockMonitorApp:
                               font=self.font_name, anchor="w")
         name_label.pack(anchor="w")
 
+        # 中间：迷你分时图
+        sparkline = MiniSparkline(inner, width=140, height=26)
+        sparkline.pack(side="left", fill="y", expand=True, padx=(6, 6))
+
         # 右侧：价格 + 涨跌幅 + 委比
         right = tk.Frame(inner, bg=THEME["card"])
         right.pack(side="right", fill="y")
@@ -1264,18 +1460,23 @@ class StockMonitorApp:
                                    font=self.font_weibi, anchor="e")
             weibi_label.pack(anchor="e", pady=(2, 0))
 
-        for w in [frame, inner, left, right, top_right, code_label, name_label, price_label, pct_label]:
+        for w in [frame, inner, left, right, top_right, code_label, name_label, price_label, pct_label, sparkline]:
             w.bind("<Enter>", lambda e, s=stock: self.on_enter_stock(s))
             w.bind("<Leave>", lambda e, s=stock: self.on_leave_stock(s))
         if weibi_label:
             weibi_label.bind("<Enter>", lambda e, s=stock: self.on_enter_stock(s))
             weibi_label.bind("<Leave>", lambda e, s=stock: self.on_leave_stock(s))
 
+        # 尝试绘制已有缓存的分时数据
+        cache_key = f"{stock.get('market','')}{stock['code']}"
+        if cache_key in self.trend_data_cache:
+            sparkline.draw(self.trend_data_cache[cache_key], True)
+
         return {
             "stock": stock, "frame": frame,
             "code_label": code_label, "name_label": name_label,
             "price_label": price_label, "pct_label": pct_label,
-            "weibi_label": weibi_label,
+            "weibi_label": weibi_label, "sparkline": sparkline,
         }
 
     def update_row(self, row, data):
@@ -1308,6 +1509,12 @@ class StockMonitorApp:
             wb_color = THEME["up"] if weibi > 0 else (THEME["down"] if weibi < 0 else THEME["fg2"])
             row["weibi_label"].config(text=f"委比 {weibi:+.2f}%", fg=wb_color)
 
+        # 更新迷你分时图
+        if row.get("sparkline"):
+            cache_key = f"{row['stock'].get('market','')}{row['stock']['code']}"
+            if cache_key in self.trend_data_cache:
+                row["sparkline"].draw(self.trend_data_cache[cache_key], change_pct >= 0)
+
     def on_enter_stock(self, stock):
         self.current_hover = stock
         self.show_trend(stock)
@@ -1336,7 +1543,7 @@ class StockMonitorApp:
         self.root.update_idletasks()
         x, y = self.calculate_trend_position()
 
-        w = 490 if self.show_wudang else 400
+        w = 510 if self.show_wudang else 400
         h = 360
         self.trend_window.geometry(f"{w}x{h}+{x}+{y}")
 
@@ -1364,9 +1571,9 @@ class StockMonitorApp:
         macd_info = self.trend_macd_cache.get(cache_key, {})
 
         if cache_key in self.trend_data_cache:
-            self.trend_chart.draw(self.trend_data_cache[cache_key], macd_info, title)
+            self.trend_chart.draw(self.trend_data_cache[cache_key], macd_info, title, fixed_time_axis=True)
         else:
-            self.trend_chart.draw(None, None, title)
+            self.trend_chart.draw(None, None, title, fixed_time_axis=True)
             self.fetch_trend_async(stock)
 
     def calculate_trend_position(self):
@@ -1375,7 +1582,7 @@ class StockMonitorApp:
         root_y = self.root.winfo_y()
         root_w = self.root.winfo_width()
 
-        trend_w = 490 if self.show_wudang else 400
+        trend_w = 510 if self.show_wudang else 400
         trend_h = 360
         gap = 8
 
@@ -1494,7 +1701,7 @@ class StockMonitorApp:
                 new_w = self.start_w
                 new_h = self.start_h
                 if "e" in self.resize_mode:
-                    new_w = max(180, self.start_w + dx)
+                    new_w = max(280, self.start_w + dx)
                 if "s" in self.resize_mode:
                     new_h = max(80, self.start_h + dy)
                 self.root.geometry(f"{new_w}x{new_h}")
@@ -1522,11 +1729,33 @@ class StockMonitorApp:
         self.refresh_data()
         self.root.after(self.get_effective_interval(), self.schedule_refresh)
 
+    def schedule_trend_refresh(self):
+        self.refresh_trends()
+        # 根据股票数量动态间隔：每只至少 3 秒，总间隔不少于 15 秒
+        interval = max(15000, len(self.stocks) * 3000)
+        self.root.after(interval, self.schedule_trend_refresh)
+
     def refresh_data(self):
         def fetch():
             data = StockData.fetch_realtime(self.stocks)
             self.data_queue.put(("realtime", None, data))
         threading.Thread(target=fetch, daemon=True).start()
+
+    def refresh_trends(self):
+        def fetch_all():
+            for stock in self.stocks:
+                market = stock.get("market", "")
+                if not market:
+                    market = auto_detect_market(stock["code"]) or "sh"
+                code = stock["code"]
+                cache_key = f"{market}{code}"
+                # 迷你分时图使用更短的限流间隔（3秒）
+                if StockData.limiter.can_request(f"trend_{cache_key}", min_interval=3):
+                    data = StockData.fetch_trend(market, code)
+                    if data and data != "rate_limited":
+                        self.data_queue.put(("trend", cache_key, data))
+                time.sleep(0.3)
+        threading.Thread(target=fetch_all, daemon=True).start()
 
     def process_queue(self):
         try:
@@ -1549,19 +1778,29 @@ class StockMonitorApp:
 
                 elif msg_type == "trend":
                     self.trend_data_cache[key] = data
+                    # 更新 hover 弹窗
                     if self.current_hover and self.trend_chart and self.trend_window and self.trend_window.winfo_exists():
                         stock = self.current_hover
                         title = f"{stock.get('market','').upper()}{stock['code']} {stock.get('name', '')}"
                         macd_info = self.trend_macd_cache.get(key, {})
-                        self.trend_chart.draw(data, macd_info, title)
+                        self.trend_chart.draw(data, macd_info, title, fixed_time_axis=True)
+                    # 更新所有行的迷你分时图
+                    for row in self.stock_rows:
+                        stock = row["stock"]
+                        ck = f"{stock.get('market','')}{stock['code']}"
+                        if ck == key and row.get("sparkline"):
+                            rt = self.realtime_data.get(ck, {})
+                            is_up = rt.get("change_pct", 0) >= 0
+                            row["sparkline"].draw(data, is_up)
 
                 elif msg_type == "macd":
                     self.trend_macd_cache[key] = data
+                    # 更新 hover 弹窗
                     if self.current_hover and self.trend_chart and self.trend_window and self.trend_window.winfo_exists():
                         stock = self.current_hover
                         title = f"{stock.get('market','').upper()}{stock['code']} {stock.get('name', '')}"
                         trend = self.trend_data_cache.get(key)
-                        self.trend_chart.draw(trend, data, title)
+                        self.trend_chart.draw(trend, data, title, fixed_time_axis=True)
         except queue.Empty:
             pass
         self.root.after(200, self.process_queue)
