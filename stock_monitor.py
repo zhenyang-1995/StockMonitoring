@@ -12,6 +12,7 @@ import threading
 import time
 import tkinter as tk
 import tkinter.messagebox as messagebox
+import tkinter.simpledialog as simpledialog
 import tkinter.ttk as ttk
 from tkinter import font as tkfont
 from urllib import request
@@ -1384,6 +1385,15 @@ class StockMonitorApp:
             row = self.create_stock_row(stock, i == len(self.stocks) - 1)
             self.stock_rows.append(row)
 
+        # 底部快捷添加按钮
+        add_btn = tk.Label(self.list_frame, text="+", bg=THEME["card"], fg=THEME["accent"],
+                           font=("Microsoft YaHei", 14, "bold"), cursor="hand2",
+                           width=3, anchor="center")
+        add_btn.pack(fill="x", pady=(4, 0))
+        add_btn.bind("<Enter>", lambda e: add_btn.config(bg=THEME["btn_secondary_hover"]))
+        add_btn.bind("<Leave>", lambda e: add_btn.config(bg=THEME["card"]))
+        add_btn.bind("<Button-1>", lambda e: self.quick_add_stock())
+
         self.trend_window = None
         self.trend_chart = None
         self.wudang_panel = None
@@ -1393,6 +1403,8 @@ class StockMonitorApp:
         self.context_menu.add_command(label="设置", command=self.open_settings,
                                       font=("Microsoft YaHei", 9))
         self.context_menu.add_command(label="立即刷新", command=self.refresh_data,
+                                      font=("Microsoft YaHei", 9))
+        self.context_menu.add_command(label="删除", command=self.delete_context_stock,
                                       font=("Microsoft YaHei", 9))
         self.context_menu.add_separator()
         self.context_menu.add_command(label="退出", command=self.root.destroy,
@@ -1417,7 +1429,71 @@ class StockMonitorApp:
         self.refresh_data()
 
     def show_context_menu(self, event):
+        # 判断右键点击的是哪一行股票
+        self._context_stock = None
+        for row in self.stock_rows:
+            try:
+                fx1 = row["frame"].winfo_rootx()
+                fy1 = row["frame"].winfo_rooty()
+                fx2 = fx1 + row["frame"].winfo_width()
+                fy2 = fy1 + row["frame"].winfo_height()
+                if fx1 <= event.x_root <= fx2 and fy1 <= event.y_root <= fy2:
+                    self._context_stock = row["stock"]
+                    break
+            except Exception:
+                pass
+        # 只有在股票行上右键时才启用删除
+        if self._context_stock:
+            self.context_menu.entryconfig("删除", state="normal")
+        else:
+            self.context_menu.entryconfig("删除", state="disabled")
         self.context_menu.post(event.x_root, event.y_root)
+
+    def delete_context_stock(self):
+        if not self._context_stock:
+            return
+        stock = self._context_stock
+        code = stock["code"]
+        name = stock.get("name", code)
+        if tk.messagebox.askyesno("确认删除", f"删除 {name} ({code})？", parent=self.root):
+            self.stocks = [s for s in self.stocks if s["code"] != code]
+            self.config["stocks"] = self.stocks
+            save_config(self.config)
+            self.reload_stocks()
+
+    def quick_add_stock(self):
+        def do_add():
+            code = simpledialog.askstring("添加股票", "请输入6位股票代码:", parent=self.root)
+            if not code:
+                return
+            code = code.strip()
+            if not code.isdigit() or len(code) != 6:
+                messagebox.showwarning("格式错误", "股票代码必须是6位数字", parent=self.root)
+                return
+            market = auto_detect_market(code)
+            if not market:
+                messagebox.showwarning("不支持", "无法识别该股票代码的市场", parent=self.root)
+                return
+            # 尝试获取名称
+            try:
+                from urllib import request
+                url = f"https://qt.gtimg.cn/q={market}{code}"
+                req = request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                with request.urlopen(req, timeout=5) as resp:
+                    text = resp.read().decode("gbk")
+                    parts = text.split("~")
+                    name = parts[1] if len(parts) > 1 else ""
+            except Exception:
+                name = ""
+            self.stocks.append({
+                "code": code, "market": market, "name": name,
+                "divergence": {"enabled": True, "periods": [5, 15, 30], "types": ["bottom", "top"]}
+            })
+            self.config["stocks"] = self.stocks
+            save_config(self.config)
+            self.reload_stocks()
+        # 使用 after 避免在按钮回调中直接弹窗导致的事件循环问题
+        self.root.after(50, do_add)
 
     def create_stock_row(self, stock, is_last):
         frame = tk.Frame(self.list_frame, bg=THEME["card"], highlightbackground=THEME["border"],
