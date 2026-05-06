@@ -1,0 +1,46 @@
+{
+    "stocks": [
+        {
+            "code": "600519",
+            "market": "sh",
+            "name": "贵州茅台",
+            "divergence": {
+                "enabled": true,
+                "periods": [5, 15, 30],
+                "types": ["bottom", "top"]
+            }
+        },
+        {
+            "code": "000858",
+            "market": "sz",
+            "name": "五粮液",
+            "divergence": {
+                "enabled": true,
+                "periods": [5, 15, 30],
+                "types": ["bottom", "top"]
+            }
+        },
+        {
+            "code": "300750",
+            "market": "sz",
+            "name": "宁德时代",
+            "divergence": {
+                "enabled": true,
+                "periods": [5, 15, 30],
+                "types": ["bottom", "top"]
+            }
+        }
+    ],
+    "window": {
+        "x": 100,
+        "y": 100,
+        "refresh_interval": 3000
+    },
+    "ui": {
+        "scale": 1.0,
+        "alpha": 0.95,
+        "show_weibi": true,
+        "show_wudang": true,
+        "boss_key": "Ctrl+Shift+H"
+    }
+}
