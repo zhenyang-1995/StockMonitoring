@@ -972,7 +972,11 @@ class SettingsWindow:
                                   troughcolor="#0a0a0a", highlightthickness=0, bd=0, width=8)
         content = tk.Frame(self.outer_canvas, bg=THEME["bg"])
 
-        content.bind("<Configure>", lambda e: self.outer_canvas.configure(scrollregion=self.outer_canvas.bbox("all")))
+        # 延迟更新 scrollregion，避免 pack 布局未完成时 bbox 计算错误
+        def _refresh_outer():
+            if self.outer_canvas.winfo_exists():
+                self.outer_canvas.configure(scrollregion=self.outer_canvas.bbox("all"))
+        content.bind("<Configure>", lambda e: self.window.after(20, _refresh_outer))
         self.outer_canvas.create_window((0, 0), window=content, anchor="nw", width=500)
         self.outer_canvas.configure(yscrollcommand=scrollbar.set)
 
