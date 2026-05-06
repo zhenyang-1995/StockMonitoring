@@ -1795,6 +1795,9 @@ class StockMonitorApp:
 
                 elif msg_type == "macd":
                     self.trend_macd_cache[key] = data
+                    # 控制台调试输出
+                    if data.get("alerts"):
+                        print(f"[背离] {key}: {' '.join(data['alerts'])}")
                     # 更新 hover 弹窗
                     if self.current_hover and self.trend_chart and self.trend_window and self.trend_window.winfo_exists():
                         stock = self.current_hover
