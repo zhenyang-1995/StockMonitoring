@@ -364,7 +364,7 @@ class StockData:
         if not market:
             market = auto_detect_market(code) or "sh"
         key = f"trend_{market}{code}"
-        if not StockData.limiter.can_request(key, min_interval=5):
+        if not StockData.limiter.can_request(key, min_interval=2):
             return "rate_limited"
 
         secid_map = {"sh": "1", "sz": "0", "bj": "0"}
@@ -1328,6 +1328,7 @@ class StockMonitorApp:
         self.build_ui()
         self.setup_drag()
         self.schedule_refresh()
+        self.prefetch_trends()
         self.schedule_trend_refresh()
         self.process_queue()
 
@@ -1811,9 +1812,8 @@ class StockMonitorApp:
 
     def schedule_trend_refresh(self):
         self.refresh_trends()
-        # 根据股票数量动态间隔：每只至少 3 秒，总间隔不少于 15 秒
-        interval = max(15000, len(self.stocks) * 3000)
-        self.root.after(interval, self.schedule_trend_refresh)
+        # 固定 5 秒轮询一次（并行获取，不受股票数量影响）
+        self.root.after(5000, self.schedule_trend_refresh)
 
     def refresh_data(self):
         def fetch():
@@ -1823,18 +1823,40 @@ class StockMonitorApp:
 
     def refresh_trends(self):
         def fetch_all():
+            def fetch_one(stock):
+                market = stock.get("market", "")
+                if not market:
+                    market = auto_detect_market(stock["code"]) or "sh"
+                code = stock["code"]
+                cache_key = f"{market}{code}"
+                # 限流间隔缩短到 1 秒（East Money 实际可承受）
+                if StockData.limiter.can_request(f"trend_{cache_key}", min_interval=1):
+                    data = StockData.fetch_trend(market, code)
+                    if data and data != "rate_limited":
+                        self.data_queue.put(("trend", cache_key, data))
+
+            # 并发获取所有股票，max_workers=5 避免一次性过多请求
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                executor.map(fetch_one, self.stocks)
+        threading.Thread(target=fetch_all, daemon=True).start()
+
+    def prefetch_trends(self):
+        """启动时立即预加载所有股票分时数据"""
+        def fetch_all():
             for stock in self.stocks:
                 market = stock.get("market", "")
                 if not market:
                     market = auto_detect_market(stock["code"]) or "sh"
                 code = stock["code"]
                 cache_key = f"{market}{code}"
-                # 迷你分时图使用更短的限流间隔（3秒）
-                if StockData.limiter.can_request(f"trend_{cache_key}", min_interval=3):
-                    data = StockData.fetch_trend(market, code)
-                    if data and data != "rate_limited":
-                        self.data_queue.put(("trend", cache_key, data))
-                time.sleep(0.3)
+                # 启动预加载不设限流（首次运行限流器是空的）
+                data = StockData.fetch_trend(market, code)
+                if data and data != "rate_limited":
+                    self.data_queue.put(("trend", cache_key, data))
+                else:
+                    print(f"[预加载] {cache_key} 被限流，将在下一轮获取")
+                time.sleep(0.1)
         threading.Thread(target=fetch_all, daemon=True).start()
 
     def process_queue(self):
