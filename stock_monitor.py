@@ -1327,6 +1327,7 @@ class StockMonitorApp:
 
         self.build_ui()
         self.setup_drag()
+        self._refresh_job = None
         self.schedule_refresh()
         self.prefetch_trends()
         self.schedule_trend_refresh()
@@ -1356,6 +1357,11 @@ class StockMonitorApp:
         self.root.attributes("-alpha", alpha)
         self.apply_scale()
         self._register_boss_key()
+        # 取消旧的刷新定时器，用新间隔重新启动
+        if self._refresh_job is not None:
+            self.root.after_cancel(self._refresh_job)
+            self._refresh_job = None
+        self.schedule_refresh()
 
     def _register_boss_key(self):
         self.hotkey.clear()
@@ -1808,7 +1814,7 @@ class StockMonitorApp:
 
     def schedule_refresh(self):
         self.refresh_data()
-        self.root.after(self.get_effective_interval(), self.schedule_refresh)
+        self._refresh_job = self.root.after(self.get_effective_interval(), self.schedule_refresh)
 
     def schedule_trend_refresh(self):
         self.refresh_trends()
